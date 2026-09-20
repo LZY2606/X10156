@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Webhook 投递实验室</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; background: #0f1420; color: #dde3ee; }
+  header { background: #182034; padding: 14px 22px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; color: #7fd4ff; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 22px; }
+  section { background: #161d2e; border: 1px solid #26304a; border-radius: 10px; padding: 14px 16px; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 15px; margin: 0 0 10px; color: #9fb4d8; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 7px; border-bottom: 1px solid #232c44; vertical-align: top; }
+  th { color: #7c8db0; font-weight: 600; }
+  input, select, textarea { background: #0d1322; color: #dde3ee; border: 1px solid #2c3a5c; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; }
+  button { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12.5px; }
+  button.ghost { background: #26304a; }
+  button.warn { background: #b7791f; }
+  button:hover { filter: brightness(1.15); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .tag { padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .t-ok { background: #1d4d33; color: #7be2a8; } .t-bad { background: #55222a; color: #ff9aa5; }
+  .t-wait { background: #4d431d; color: #ecd27b; } .t-dead { background: #3d2036; color: #e79ad9; }
+  pre { background: #0b101d; border: 1px solid #232c44; border-radius: 6px; padding: 8px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto; }
+  .clock { font-variant-numeric: tabular-nums; color: #ecd27b; }
+  .muted { color: #6b7a99; font-size: 11.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Webhook 投递实验室</h1>
+  <span>虚拟时钟 <span class="clock" id="clock">-</span></span>
+  <input id="stepSecs" type="number" value="5" style="width:70px"> 秒
+  <button onclick="stepClock()">推进时钟</button>
+  <button class="ghost" onclick="stepNext()">推进到下一调度</button>
+  <button class="ghost" onclick="load()">刷新</button>
+</header>
+<main>
+  <section>
+    <h2>端点</h2>
+    <div class="row">
+      <input id="epName" placeholder="名称" style="width:90px">
+      <input id="epSecret" placeholder="签名密钥" value="dev-secret" style="width:110px">
+      <input id="epMax" type="number" value="3" title="最大尝试次数" style="width:60px">
+      <select id="epMode">
+        <option value="OK">200 正常</option><option value="TIMEOUT">响应超时</option>
+        <option value="DISCONNECT">连接断开</option><option value="RATE_LIMIT">429 限流</option>
+        <option value="SERVER_500">500</option><option value="SERVER_502">502</option>
+        <option value="SERVER_503">503</option><option value="SERVER_504">504</option>
+        <option value="SERVER_507">507</option><option value="LOST_RESPONSE">已处理但响应丢失</option>
+      </select>
+      <input id="epRetryAfter" placeholder="Retry-After" value="3" style="width:90px">
+      <button onclick="saveEndpoint()">保存端点</button>
+    </div>
+    <div id="epEditId" class="muted"></div>
+    <table><thead><tr><th>ID</th><th>名称</th><th>模式</th><th>上限</th><th>状态</th><th></th></tr></thead><tbody id="eps"></tbody></table>
+  </section>
+  <section>
+    <h2>发送事件</h2>
+    <div class="row">
+      <select id="evEndpoint"></select>
+      <input id="evId" placeholder="事件 ID" style="width:130px">
+    </div>
+    <div class="row"><textarea id="evPayload" rows="3" style="width:100%">{"hello":"world"}</textarea></div>
+    <button onclick="sendEvent()">发送事件</button>
+    <span id="evMsg" class="muted"></span>
+    <h2 style="margin-top:14px">死信队列</h2>
+    <table><thead><tr><th>链</th><th>事件</th><th></th></tr></thead><tbody id="dead"></tbody></table>
+  </section>
+  <section class="wide">
+    <h2>投递链与尝试</h2>
+    <div id="chains"></div>
+  </section>
+</main>
+<script>
+let state = null, editId = null, openChain = null;
+const fmt = ms => new Date(ms).toISOString().replace('T',' ').replace('Z','');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) { alert(j.error || r.status); throw new Error(j.error); }
+  return j;
+}
+async function load() {
+  state = await api('/api/state');
+  document.getElementById('clock').textContent = fmt(state.now);
+  renderEndpoints(); renderChains(); renderDead();
+}
+function renderEndpoints() {
+  const sel = document.getElementById('evEndpoint');
+  sel.innerHTML = state.endpoints.map(e => `<option value="${e.id}">${esc(e.name)} (${e.id})</option>`).join('');
+  document.getElementById('eps').innerHTML = state.endpoints.map(e => `<tr>
+    <td>${e.id}</td><td>${esc(e.name)}</td><td>${e.mode}</td><td>${e.maxAttempts}</td>
+    <td>${e.paused ? '<span class="tag t-bad">已暂停</span>' : '<span class="tag t-ok">运行中</span>'}</td>
+    <td>
+      <button class="ghost" onclick="editEndpoint('${e.id}')">编辑</button>
+      <button class="${e.paused ? '' : 'warn'}" onclick="togglePause('${e.id}', ${e.paused})">${e.paused ? '恢复' : '暂停'}</button>
+    </td></tr>`).join('');
+}
+function editEndpoint(id) {
+  const e = state.endpoints.find(x => x.id === id);
+  editId = id;
+  document.getElementById('epEditId').textContent = '正在编辑 ' + id + '（保存将更新该端点）';
+  document.getElementById('epName').value = e.name;
+  document.getElementById('epSecret').value = e.secret;
+  document.getElementById('epMax').value = e.maxAttempts;
+  document.getElementById('epMode').value = e.mode;
+  document.getElementById('epRetryAfter').value = e.retryAfter || '';
+}
+async function saveEndpoint() {
+  const body = { name: epName.value, secret: epSecret.value, maxAttempts: +epMax.value, mode: epMode.value, retryAfter: epRetryAfter.value };
+  if (editId) { await api('/api/endpoints/' + editId, body); editId = null; document.getElementById('epEditId').textContent=''; }
+  else await api('/api/endpoints', body);
+  load();
+}
+async function togglePause(id, paused) { await api(`/api/endpoints/${id}/${paused ? 'resume' : 'pause'}`, {}); load(); }
+async function sendEvent() {
+  const r = await api('/api/events', { endpointId: evEndpoint.value, eventId: evId.value, payload: evPayload.value });
+  document.getElementById('evMsg').textContent = r.duplicate ? '重复事件 ID，已忽略（指向原链 ' + r.chainId + '）' : '已入队，链 ' + r.chainId;
+  load();
+}
+async function stepClock() { await api('/api/clock/step', { seconds: +document.getElementById('stepSecs').value }); load(); }
+async function stepNext() { await api('/api/clock/next', {}); load(); }
+async function replay(id) { await api(`/api/chains/${id}/replay`, {}); load(); }
+function renderDead() {
+  document.getElementById('dead').innerHTML = state.chains.filter(c => c.status === 'DEAD').map(c =>
+    `<tr><td>${c.chainId}</td><td>${esc(c.eventId)}</td><td><button onclick="replay('${c.chainId}')">重放</button></td></tr>`).join('');
+}
+function tag(st) {
+  const cls = { SUCCEEDED:'t-ok', SUCCESS:'t-ok', ACTIVE:'t-wait', SCHEDULED:'t-wait', DEAD:'t-dead', FAILED:'t-bad' }[st] || 't-wait';
+  return `<span class="tag ${cls}">${st}</span>`;
+}
+function renderChains() {
+  document.getElementById('chains').innerHTML = state.chains.map(c => {
+    const atts = state.attempts.filter(a => a.chainId === c.chainId);
+    const open = openChain === c.chainId;
+    return `<div style="margin-bottom:10px">
+      <div class="row" style="margin-bottom:2px">
+        <button class="ghost" onclick="openChain=openChain==='${c.chainId}'?null:'${c.chainId}';renderChains()">${open ? '▾' : '▸'}</button>
+        <b>${c.chainId}</b> ${tag(c.status)} <span class="muted">事件 ${esc(c.eventId)} → ${c.endpointId}</span>
+        ${c.replayedFrom ? `<span class="muted">重放自 ${c.replayedFrom}</span>` : ''}
+      </div>
+      ${open ? `<table><thead><tr><th>#</th><th>尝试</th><th>计划时间</th><th>状态</th><th>响应</th><th>下一调度原因</th><th></th></tr></thead><tbody>
+        ${atts.map(a => `<tr>
+          <td>${a.number}</td><td>${a.attemptId}</td><td>${fmt(a.scheduledAt)}</td><td>${tag(a.status)}</td>
+          <td>${a.responseStatus ?? ''} ${a.errorKind ? '(' + a.errorKind + ')' : ''} ${esc(a.responseHeaders || '')}</td>
+          <td>${a.nextReason}</td>
+          <td>${a.signature ? `<button class="ghost" onclick="verify('${a.attemptId}')">验证签名</button>` : ''}</td>
+        </tr>
+        <tr><td></td><td colspan="6">
+          ${a.canonicalRequest ? `<div class="muted">规范化请求（实际发送字节）</div><pre>${esc(a.canonicalRequest)}</pre>` : ''}
+          ${a.signatureInput ? `<div class="muted">签名输入</div><pre>${esc(a.signatureInput)}</pre>
+          <div class="muted">签名 <span id="sig-${a.attemptId}">${a.signature}</span></div>` : ''}
+          ${a.responseBody != null ? `<div class="muted">响应体</div><pre>${esc(a.responseBody)}</pre>` : ''}
+        </td></tr>`).join('')}
+      </tbody></table>` : ''}
+    </div>`;
+  }).join('');
+}
+async function verify(id) {
+  const r = await api('/api/attempts/' + id + '/verify');
+  const el = document.getElementById('sig-' + id);
+  el.textContent = (r.valid ? '✓ 有效 ' : '✗ 无效，期望 ') + (r.valid ? r.actual : r.expected);
+  el.style.color = r.valid ? '#7be2a8' : '#ff9aa5';
+}
+load();
+</script>
+</body>
+</html>
