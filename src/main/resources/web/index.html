@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webhook 投递实验室</title>
+<style>
+:root{--bg:#0f172a;--panel:#1e293b;--panel2:#273449;--line:#334155;--text:#e2e8f0;--muted:#94a3b8;--accent:#38bdf8;--ok:#34d399;--warn:#fbbf24;--err:#f87171;--dead:#c084fc}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+header{padding:16px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:#162033}
+header h1{font-size:18px;margin:0}
+.clock{font-family:ui-monospace,Menlo,monospace;background:var(--panel2);padding:6px 12px;border-radius:6px;border:1px solid var(--line)}
+main{padding:20px 24px;display:grid;grid-template-columns:380px 1fr;gap:20px;align-items:start;max-width:1500px;margin:0 auto}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.panel h2{font-size:14px;margin:0 0 12px;color:var(--accent);letter-spacing:.04em}
+label{display:block;font-size:12px;color:var(--muted);margin:8px 0 3px}
+input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit}
+textarea{font-family:ui-monospace,Menlo,monospace;resize:vertical}
+button{background:var(--accent);color:#082f49;border:0;border-radius:6px;padding:7px 14px;font-weight:600;cursor:pointer;font-size:13px;margin-top:10px}
+button.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--line)}
+button.danger{background:var(--err);color:#450a0a}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1;min-width:90px}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.tag.ACTIVE{background:#1e3a5f;color:#7dd3fc}
+.tag.SUCCEEDED{background:#064e3b;color:var(--ok)}
+.tag.FAILED{background:#7f1d1d;color:#fecaca}
+.tag.DEAD{background:#581c87;color:#e9d5ff}
+.tag.RESPONDED{background:#064e3b;color:var(--ok)}
+.tag.TIMEOUT,.tag.DISCONNECTED,.tag.LOST,.tag.RECOVERED{background:#78350f;color:var(--warn)}
+.chain{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden}
+.chain-head{padding:10px 14px;background:var(--panel2);display:flex;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap}
+.chain-body{padding:0 14px 12px;display:none}
+.chain.open .chain-body{display:block}
+.attempt{border-left:3px solid var(--line);margin:10px 0 10px 12px;padding:4px 0 4px 14px}
+.attempt.pending{border-left-color:var(--warn)}
+.attempt.done{border-left-color:var(--ok)}
+.attempt.failed{border-left-color:var(--err)}
+code,.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+pre{background:#0b1424;border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow-x:auto;margin:6px 0;white-space:pre-wrap;word-break:break-all}
+.muted{color:var(--muted);font-size:12px}
+.ep-card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--panel2)}
+.ep-card.paused{opacity:.75}
+.mini{padding:3px 9px;font-size:12px;margin-top:0}
+#toast{position:fixed;right:20px;bottom:20px;background:#0c4a6e;color:#e0f2fe;padding:10px 16px;border-radius:8px;display:none;border:1px solid var(--accent);max-width:380px}
+#toast.err{background:#7f1d1d;color:#fecaca;border-color:var(--err)}
+.sig{font-size:11px;color:var(--muted);word-break:break-all}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button{margin:0;background:var(--panel2);color:var(--muted);border:1px solid var(--line)}
+.tabs button.on{background:var(--accent);color:#082f49}
+.recv{font-size:12px;border-bottom:1px dashed var(--line);padding:6px 0}
+@media(max-width:980px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧪 Webhook 投递实验室</h1>
+  <span class="clock">虚拟时钟: <b id="clock">0</b> ms</span>
+  <button id="btnStep" title="推进到下一次调度并投递">单步推进 ⏭</button>
+  <button id="btnAdvance" class="secondary">推进 +1000ms</button>
+  <button id="btnRefresh" class="secondary">刷新</button>
+  <span class="muted" id="summary"></span>
+</header>
+<main>
+  <div id="left">
+    <div class="panel">
+      <h2>端点配置</h2>
+      <label>端点 ID</label><input id="epId" value="ep1">
+      <label>签名密钥 secret</label><input id="epSecret" value="dev-secret">
+      <div class="row">
+        <div><label>最大尝试次数</label><input id="epMax" type="number" value="5"></div>
+        <div><label>超时(ms)</label><input id="epTimeout" type="number" value="5000"></div>
+      </div>
+      <div class="row">
+        <div><label>基础退避(ms)</label><input id="epBase" type="number" value="1000"></div>
+        <div><label>退避上限(ms)</label><input id="epCap" type="number" value="60000"></div>
+      </div>
+      <label>确定性抖动种子 jitterSeed</label><input id="epSeed" type="number" value="1">
+      <label>接收器行为脚本（; 分隔每次接触）</label>
+      <select id="epBehaviorPreset"></select>
+      <input id="epBehavior" value="success" style="margin-top:6px">
+      <div class="row" style="margin-top:10px">
+        <button id="btnSaveEp">保存端点</button>
+        <button id="btnPause" class="secondary">暂停</button>
+        <button id="btnResume" class="secondary">恢复</button>
+      </div>
+      <div id="epList" style="margin-top:12px"></div>
+    </div>
+    <div class="panel">
+      <h2>发送事件</h2>
+      <label>事件 ID（同链重试复用；重复创建返回 409）</label><input id="evId" value="evt-1">
+      <label>目标端点</label><select id="evEndpoint"></select>
+      <label>Payload（按实际字节签名）</label>
+      <textarea id="evPayload" rows="5">{"orderId":"A-1001","action":"paid"}</textarea>
+      <div class="row">
+        <div><label>Content-Type</label><input id="evType" value="application/json"></div>
+      </div>
+      <button id="btnSend">发送事件</button>
+    </div>
+  </div>
+  <div id="right">
+    <div class="panel">
+      <h2>投递链（事件创建 → 成功 / 失败 / 死信）</h2>
+      <div class="tabs">
+        <button data-tab="all" class="on">全部</button>
+        <button data-tab="dead">死信队列</button>
+        <button data-tab="recv">接收器日志</button>
+      </div>
+      <div id="chains"><p class="muted">还没有投递链。先保存端点并发送事件。</p></div>
+    </div>
+  </div>
+</main>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+let state=null, tab='all';
+const esc=s=>s==null?'':String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path,opts){
+  const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts));
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+function toast(msg,isErr){const t=$('#toast');t.textContent=msg;t.className=isErr?'err':'';t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',3500);}
+
+const REASON_CN={INITIAL:'新事件首次投递',BACKOFF:'指数退避后重试',BACKOFF_429:'429 无 Retry-After，按退避重试',
+  RETRY_AFTER:'按 429 Retry-After 调度',REPLAY:'死信重放（新链）',RECOVERED:'崩溃恢复：结果未知，重新投递',
+  MAX_ATTEMPTS:'超过最大尝试次数 → 死信',RETRY_AFTER_CAP:'Retry-After 超过端点上限 → 死信',RECOVERY_MAX_ATTEMPTS:'恢复后超过最大尝试次数'};
+
+async function refresh(){
+  state=await api('/api/state');
+  $('#clock').textContent=state.nowMs;
+  $('#summary').textContent=`端点 ${state.endpoints.length} · 链 ${state.chains.length} · 接收器记录 ${state.receiverLog.length}`;
+  renderEndpoints(); renderEndpointSelect(); renderChains(); renderBehaviors();
+}
+function renderBehaviors(){
+  if($('#epBehaviorPreset').options.length) return;
+  for(const b of state.behaviors)$('#epBehaviorPreset').add(new Option(b.label,b.value));
+  $('#epBehaviorPreset').onchange=e=>{if(e.target.value)$('#epBehavior').value=e.target.value;};
+}
+function renderEndpointSelect(){
+  const sel=$('#evEndpoint'); const cur=sel.value;
+  sel.innerHTML='';
+  for(const ep of state.endpoints)sel.add(new Option(`${ep.id}${ep.paused?'（已暂停）':''}`,ep.id));
+  if(cur)sel.value=cur;
+}
+function renderEndpoints(){
+  const el=$('#epList'); el.innerHTML='';
+  for(const ep of state.endpoints){
+    const d=document.createElement('div');
+    d.className='ep-card'+(ep.paused?' paused':'');
+    d.innerHTML=`<b>${esc(ep.id)}</b> ${ep.paused?'<span class="tag FAILED">已暂停</span>':'<span class="tag SUCCEEDED">运行中</span>'}
+      <div class="muted">行为: ${esc(ep.behavior)} · 最大 ${ep.maxAttempts} 次 · 基础 ${ep.baseBackoffMs}ms · 上限 ${ep.maxBackoffMs}ms · seed ${ep.jitterSeed}</div>
+      <div class="muted">待发尝试 ${ep.pendingAttempts}</div>
+      <button class="mini secondary" data-id="${esc(ep.id)}">载入到表单</button>`;
+    d.querySelector('button').onclick=()=>loadEp(ep);
+    el.appendChild(d);
+  }
+}
+function loadEp(ep){
+  $('#epId').value=ep.id;$('#epSecret').value=ep.secret;$('#epMax').value=ep.maxAttempts;
+  $('#epTimeout').value=ep.timeoutMs;$('#epBase').value=ep.baseBackoffMs;$('#epCap').value=ep.maxBackoffMs;
+  $('#epSeed').value=ep.jitterSeed;$('#epBehavior').value=ep.behavior;
+}
+function endpointBody(){
+  return {id:$('#epId').value.trim(),secret:$('#epSecret').value,maxAttempts:+$('#epMax').value,
+    timeoutMs:+$('#epTimeout').value,baseBackoffMs:+$('#epBase').value,maxBackoffMs:+$('#epCap').value,
+    jitterSeed:+$('#epSeed').value,behavior:$('#epBehavior').value};
+}
+
+function renderChains(){
+  const el=$('#chains'); el.innerHTML='';
+  if(tab==='recv'){renderReceiverLog(el);return;}
+  const list=tab==='dead'?state.deadLetters:state.chains.slice().reverse();
+  if(!list.length){el.innerHTML='<p class="muted">暂无记录。</p>';return;}
+  for(const c of list)el.appendChild(chainCard(c));
+}
+function chainCard(c){
+  const d=document.createElement('div');
+  d.className='chain';
+  let origin=c.originChain?`<span class="muted">← 源自 ${esc(c.originChain.id)} / 重放自 ${esc(c.replayOfChainId||'')}</span>`:'';
+  let head=`<div class="chain-head"><span class="tag ${c.status}">${c.status}</span>
+    <b>${esc(c.id)}</b><span class="mono">event=${esc(c.eventId)}</span><span class="muted">→ ${esc(c.endpointId)}</span>
+    ${origin}<span style="flex:1"></span><span class="muted">尝试 ${c.attempts.length}</span></div>`;
+  let body='<div class="chain-body">';
+  if(c.endReason)body+=`<div class="muted">终态原因: ${esc(c.endReason)}</div>`;
+  for(const a of c.attempts){
+    const r=a.result;
+    const cls=r?(r.status>=200&&r.status<300?'done':'failed'):'pending';
+    body+=`<div class="attempt ${cls}"><b>#${a.attemptNo} ${esc(a.id)}</b>
+      <span class="muted">调度@${a.scheduledAt}${a.sentAt!=null?' · 发送@'+a.sentAt:''}</span><br>
+      <span class="muted">调度原因 [${esc(a.reasonCode)}] ${esc(a.reason)}</span>`;
+    if(!r){body+='<div class="muted">⏳ 已调度，等待虚拟时钟推进（或进程曾在送达后崩溃）</div>';}
+    else{
+      const tag=r.outcome==='RESPONDED'?`<span class="tag RESPONDED">${r.status}</span>`:`<span class="tag ${r.outcome}">${r.outcome}</span>`;
+      body+=`<div style="margin-top:4px">${tag} <span class="muted">完成@${r.completedAt}</span></div>`;
+      if(r.failureKind)body+=`<div class="muted">失败类型: ${esc(r.failureKind)}</div>`;
+      if(r.responseBody)body+=`<pre>${esc(r.responseBody)}</pre>`;
+      if(r.nextReasonCode)body+=`<div class="muted">下次调度: [${esc(r.nextReasonCode)}] ${esc(r.nextReason)} · 延迟 ${r.nextDelayMs}ms · ${esc('att-'+r.nextAttemptId)}</div>`;
+    }
+    body+=`<details><summary class="muted">签名验证输入 / 覆盖的请求头</summary>
+      <div class="sig">签名头: ${esc(a.signedHeaders.join(', '))}</div>
+      <div class="sig">body SHA-256: ${esc(a.bodySha256)}</div>
+      <pre class="sig">${esc(a.signatureInput)}</pre>
+      <div class="sig">HMAC-SHA256 base64: <b>${esc(a.signature)}</b></div></details></div>`;
+  }
+  if(c.status==='DEAD'||c.status==='FAILED'){
+    body+=`<button class="mini danger" data-replay="${esc(c.id)}">重放死信（创建新投递链）</button>`;
+  }
+  body+='</div>';
+  d.innerHTML=head+body;
+  d.querySelector('.chain-head').onclick=()=>d.classList.toggle('open');
+  const rb=d.querySelector('[data-replay]');
+  if(rb)rb.onclick=async e=>{e.stopPropagation();try{await api(`/api/chains/${encodeURIComponent(rb.dataset.replay)}/replay`,{method:'POST',body:'{}'});toast('已创建重放链');refresh();}catch(err){toast(err.message,true);}};
+  return d;
+}
+function renderReceiverLog(el){
+  if(!state.receiverLog.length){el.innerHTML='<p class="muted">接收器还未收到任何请求。</p>';return;}
+  for(const e of state.receiverLog.slice().reverse()){
+    const d=document.createElement('div');d.className='recv';
+    d.innerHTML=`<span class="tag ${e.outcome==='RESPONDED'&&e.status<300?'RESPONDED':e.outcome}">${e.outcome}${e.status!=null?' '+e.status:''}</span>
+      <b>${esc(e.endpointId)}</b> <span class="mono">${esc(e.attemptId)}</span> @${e.at}
+      ${e.duplicate?'<span class="tag ACTIVE">重复投递（幂等命中）</span>':''}
+      ${e.signatureValid?'<span class="tag SUCCEEDED">签名有效 ✓</span>':'<span class="tag FAILED">签名无效 ✗</span>'}
+      <span class="muted">行为: ${esc(e.behavior)}</span>
+      <details><summary class="muted">接收器视角的签名校验</summary>
+        <pre class="sig">${esc(e.signatureInput)}</pre>
+        <div class="sig">期望: ${esc(e.expectedSignature)}</div>
+        <div class="sig">收到: ${esc(e.receivedSignature)}</div></details>`;
+    el.appendChild(d);
+  }
+}
+
+$('#btnSaveEp').onclick=async()=>{try{await api('/api/endpoints',{method:'PUT',body:JSON.stringify(endpointBody())});toast('端点已保存');refresh();}catch(e){toast(e.message,true);}};
+$('#btnPause').onclick=async()=>{try{await api(`/api/endpoints/${encodeURIComponent($('#epId').value.trim())}/pause`,{method:'POST',body:'{}'});toast('已暂停：只阻止新尝试，不取消在途处理');refresh();}catch(e){toast(e.message,true);}};
+$('#btnResume').onclick=async()=>{try{await api(`/api/endpoints/${encodeURIComponent($('#epId').value.trim())}/resume`,{method:'POST',body:'{}'});toast('已恢复：原计划时间保持不变');refresh();}catch(e){toast(e.message,true);}};
+$('#btnSend').onclick=async()=>{try{const b={eventId:$('#evId').value.trim(),endpointId:$('#evEndpoint').value,payload:$('#evPayload').value,contentType:$('#evType').value};await api('/api/events',{method:'POST',body:JSON.stringify(b)});toast('事件已创建并排入虚拟时间队列');refresh();}catch(e){toast(e.message,true);}};
+$('#btnStep').onclick=async()=>{try{const r=await api('/api/clock/step',{method:'POST',body:'{}'});toast('时钟推进到 '+r.advancedTo+'ms，投递 '+(r.fired||[]).length+' 次');refresh();}catch(e){toast(e.message,true);}};
+$('#btnAdvance').onclick=async()=>{try{const r=await api('/api/clock/advance?ms=1000',{method:'POST',body:'{}'});toast('时钟推进到 '+r.advancedTo+'ms，投递 '+(r.fired||[]).length+' 次');refresh();}catch(e){toast(e.message,true);}};
+$('#btnRefresh').onclick=refresh;
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');tab=b.dataset.tab;renderChains();});
+refresh();
+</script>
+</body>
+</html>
