@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webhook 投递实验室</title>
+<style>
+  :root {
+    --bg:#0f1420; --panel:#171e2e; --panel2:#1e2740; --line:#2a3550;
+    --text:#e6ebf5; --muted:#94a3b8; --accent:#4f8cff; --good:#34d399;
+    --bad:#f87171; --warn:#fbbf24; --purple:#a78bfa;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg); color:var(--text); }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:20px; margin:0; }
+  .clock { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .clock b { color:var(--accent); font-variant-numeric:tabular-nums; }
+  main { display:grid; grid-template-columns:380px 1fr; gap:16px; padding:16px 24px; align-items:start; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .panel h2 { font-size:14px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+  input, select, textarea { width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:7px 9px; font:inherit; }
+  textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 12px; font:inherit;
+    cursor:pointer; }
+  button.secondary { background:var(--panel2); border:1px solid var(--line); color:var(--text); }
+  button.danger { background:#7f1d1d; } button.good { background:#065f46; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .row > * { flex:1; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .ep-card { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:8px; background:var(--panel2); }
+  .ep-card .name { font-weight:600; }
+  .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px; margin-left:6px; }
+  .tag.paused { background:#78350f; color:#fde68a; }
+  .tag.active { background:#064e3b; color:#a7f3d0; }
+  .chain { border:1px solid var(--line); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .chain-head { padding:12px 14px; background:var(--panel2); display:flex; justify-content:space-between; gap:10px; align-items:center; cursor:pointer; flex-wrap:wrap; }
+  .chain-head .ids { font-family:ui-monospace,monospace; font-size:12px; color:var(--muted); }
+  .badge { font-size:11px; padding:2px 9px; border-radius:10px; font-weight:600; }
+  .badge.SUCCEEDED { background:#064e3b; color:#6ee7b7; }
+  .badge.DEAD_LETTER { background:#7f1d1d; color:#fca5a5; }
+  .badge.PENDING { background:#1e3a8a; color:#bfdbfe; }
+  .badge.IN_FLIGHT { background:#4c1d95; color:#ddd6fe; }
+  .chain-body { padding:12px 14px; display:none; }
+  .chain.open .chain-body { display:block; }
+  .attempt { border-left:3px solid var(--line); padding:8px 12px; margin:8px 0; background:var(--panel); border-radius:0 8px 8px 0; }
+  .attempt.SUCCEEDED { border-left-color:var(--good); }
+  .attempt.DEAD_LETTER { border-left-color:var(--bad); }
+  .attempt.FAILED_RETRY, .attempt.RECOVERED { border-left-color:var(--warn); }
+  .attempt.IN_FLIGHT { border-left-color:var(--purple); }
+  .attempt .meta { font-size:12px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap; }
+  pre { background:#0b1020; border:1px solid var(--line); border-radius:6px; padding:10px; overflow:auto;
+    font-size:12px; max-height:260px; margin:6px 0; white-space:pre-wrap; word-break:break-all; }
+  details summary { cursor:pointer; color:var(--muted); font-size:12px; margin:4px 0; }
+  .kv { font-size:12px; color:var(--muted); } .kv b { color:var(--text); }
+  .ok { color:var(--good); } .no { color:var(--bad); }
+  .toolbar { position:sticky; top:0; z-index:5; }
+  .hint { font-size:12px; color:var(--muted); }
+  .toast { position:fixed; bottom:18px; right:18px; background:var(--panel2); border:1px solid var(--line);
+    padding:10px 14px; border-radius:8px; opacity:0; transition:opacity .2s; max-width:380px; }
+  .toast.show { opacity:1; } .toast.err { border-color:#7f1d1d; }
+  .replay-note { font-size:11px; color:var(--purple); }
+  code { background:#0b1020; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Webhook 投递实验室</h1>
+  <div class="clock">虚拟时钟 <b id="clock">–</b> <span id="clockIso" class="hint"></span></div>
+  <div class="clock">待调度 <b id="schedCount">0</b></div>
+  <div class="clock">已处理事件 <b id="processedCount">0</b></div>
+  <div style="flex:1"></div>
+  <div class="row" style="flex:0 0 auto">
+    <button id="btnStep">单步推进 ▸</button>
+    <button class="secondary" id="btnAdvance">前进 1s</button>
+    <input id="advanceMs" type="number" value="5000" style="width:110px" title="前进毫秒数">
+    <button class="secondary" id="btnRefresh">刷新</button>
+  </div>
+</header>
+
+<main>
+  <div>
+    <div class="panel">
+      <h2>端点配置 / 可编程接收器</h2>
+      <label>端点 id（可空自动生成）</label>
+      <input id="epId" placeholder="ep_orders">
+      <label>名称</label>
+      <input id="epName" placeholder="订单服务">
+      <div class="grid2">
+        <div><label>签名密钥 secret</label><input id="epSecret" value="topsecret"></div>
+        <div><label>key id</label><input id="epKeyId" value="key-1"></div>
+      </div>
+      <div class="grid2">
+        <div><label>初始退避(ms)</label><input id="epInitial" type="number" value="1000"></div>
+        <div><label>倍数</label><input id="epMult" type="number" step="0.1" value="2.0"></div>
+      </div>
+      <div class="grid2">
+        <div><label>退避上限(ms)</label><input id="epMax" type="number" value="60000"></div>
+        <div><label>最大尝试次数</label><input id="epAttempts" type="number" value="5"></div>
+      </div>
+      <label>接收器行为</label>
+      <select id="epBehavior">
+        <option value="SUCCESS">成功 200</option>
+        <option value="TIMEOUT">响应超时</option>
+        <option value="DISCONNECT">连接断开</option>
+        <option value="RATE_LIMIT">429 + Retry-After</option>
+        <option value="STATUS">五类服务端状态 (5xx)</option>
+        <option value="LOST">已处理但响应丢失</option>
+      </select>
+      <div class="grid2">
+        <div><label>5xx 状态码</label><select id="epStatus">
+          <option>500</option><option>501</option><option>502</option><option>503</option><option>504</option>
+        </select></div>
+        <div><label>Retry-After（秒 或 HTTP 日期）</label><input id="epRetry" placeholder="3  或  Wed, 21 Oct 2025 07:28:00 GMT"></div>
+      </div>
+      <label>参与签名的请求头（逗号分隔）</label>
+      <input id="epCovered" value="x-lab-key-id,x-lab-event-id,x-lab-attempt-id,x-lab-timestamp,content-type">
+      <div class="row" style="margin-top:10px">
+        <button id="btnCreateEp">创建端点</button>
+        <button class="secondary" id="btnUpdateEp">更新选中端点</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>发送事件</h2>
+      <label>目标端点</label><select id="evEndpoint"></select>
+      <label>事件 id（可空；重复返回 409）</label><input id="evId" placeholder="evt_1001">
+      <label>原始 payload（按 UTF-8 字节签名与重放）</label>
+      <textarea id="evPayload" rows="5">{"orderId":"A-1","amount":42,"note":"中文 payload ☃"}</textarea>
+      <div class="row" style="margin-top:10px"><button id="btnSend">发送事件</button></div>
+    </div>
+
+    <div class="panel">
+      <h2>实验控制</h2>
+      <label>确定性抖动种子</label>
+      <div class="row">
+        <input id="seed" type="number" value="42">
+        <button class="secondary" id="btnSeed">设置种子</button>
+      </div>
+      <label style="margin-top:10px">注入崩溃点（下一次操作触发）</label>
+      <div class="row">
+        <select id="crashPoint">
+          <option value="">（无）</option>
+          <option value="after_schedule">调度写入后 / 发送前</option>
+          <option value="before_send">送达接收器前</option>
+          <option value="after_send">接收器返回后 / 响应落盘前</option>
+        </select>
+        <button class="danger" id="btnCrash">武装崩溃</button>
+      </div>
+      <p class="hint">提示：崩溃以异常形式中断当前请求；重启服务后状态从持久化日志确定恢复。</p>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>端点列表</h2>
+      <div id="endpoints"></div>
+    </div>
+    <div class="panel">
+      <h2>投递链（事件 → 每次尝试 → 最终状态）</h2>
+      <div id="chains"></div>
+    </div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="/web/app.js"></script>
+</body>
+</html>
